@@ -4,7 +4,6 @@ import com.vladmihalcea.book.hpjp.util.AbstractPostgreSQLIntegrationTest;
 import com.vladmihalcea.book.hpjp.util.exception.ExceptionUtil;
 import org.hibernate.LockMode;
 import org.hibernate.LockOptions;
-import org.junit.Before;
 import org.junit.Test;
 
 import javax.persistence.*;
@@ -26,9 +25,7 @@ public class SkipLockJobQueueTest extends AbstractPostgreSQLIntegrationTest {
         };
     }
 
-    @Before
-    public void init() {
-        super.init();
+    public void afterInit() {
         doInJPA(entityManager -> {
             for (long i = 1; i <= 10; i++) {
                 Post post = new Post();
@@ -80,11 +77,12 @@ public class SkipLockJobQueueTest extends AbstractPostgreSQLIntegrationTest {
                 EntityManager entityManager,
                 PostStatus status,
                 int postCount) {
-        return entityManager.createQuery(
-            "select p " +
-            "from Post p " +
-            "where p.status = :status " +
-            "order by p.id", Post.class)
+        return entityManager.createQuery("""
+            select p
+            from Post p
+            where p.status = :status
+            order by p.id
+            """, Post.class)
         .setParameter("status", status)
         .setMaxResults(postCount)
         .setLockMode(LockModeType.PESSIMISTIC_WRITE)
@@ -147,12 +145,12 @@ public class SkipLockJobQueueTest extends AbstractPostgreSQLIntegrationTest {
                 EntityManager entityManager,
                 PostStatus status,
                 int postCount) {
-        return entityManager
-        .createQuery(
-            "select p " +
-            "from Post p " +
-            "where p.status = :status " +
-            "order by p.id", Post.class)
+        return entityManager.createQuery("""
+            select p
+            from Post p
+            where p.status = :status
+            order by p.id
+            """, Post.class)
         .setParameter("status", status)
         .setMaxResults(postCount)
         .setLockMode(LockModeType.PESSIMISTIC_WRITE)
@@ -166,11 +164,12 @@ public class SkipLockJobQueueTest extends AbstractPostgreSQLIntegrationTest {
             int maxResults,
             Integer maxCount) {
         LOGGER.debug("Attempting to lock {} Post(s) entities", maxResults);
-        List<Post> posts= entityManager.createQuery(
-            "select p " +
-            "from Post p " +
-            "where p.status = :status " +
-            "order by p.id", Post.class)
+        List<Post> posts= entityManager.createQuery("""
+            select p
+            from Post p
+            where p.status = :status
+            order by p.id
+            """, Post.class)
         .setParameter("status", PostStatus.PENDING)
         .setMaxResults(maxResults)
         .unwrap(org.hibernate.query.Query.class)

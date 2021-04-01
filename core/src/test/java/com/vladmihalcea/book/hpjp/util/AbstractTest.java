@@ -47,6 +47,8 @@ import javax.persistence.spi.PersistenceUnitInfo;
 import javax.sql.DataSource;
 import java.io.Closeable;
 import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -69,6 +71,8 @@ public abstract class AbstractTest {
     });
 
     protected final Logger LOGGER = LoggerFactory.getLogger(getClass());
+
+    private DataSource dataSource;
 
     private EntityManagerFactory emf;
 
@@ -292,7 +296,7 @@ public abstract class AbstractTest {
         //log settings
         properties.put("hibernate.hbm2ddl.auto", "create-drop");
         //data source settings
-        DataSource dataSource = newDataSource();
+        DataSource dataSource = dataSource();
         if (dataSource != null) {
             properties.put("hibernate.connection.datasource", dataSource);
         }
@@ -310,6 +314,13 @@ public abstract class AbstractTest {
 
     protected DataSourceProxyType dataSourceProxyType() {
         return DataSourceProxyType.DATA_SOURCE_PROXY;
+    }
+
+    protected DataSource dataSource() {
+        if(dataSource == null) {
+            dataSource = newDataSource();
+        }
+        return dataSource;
     }
 
     protected DataSource newDataSource() {
@@ -646,7 +657,7 @@ public abstract class AbstractTest {
     protected  void transact(Consumer<Connection> callback, Consumer<Connection> before) {
         Connection connection = null;
         try {
-            connection = newDataSource().getConnection();
+            connection = dataSource().getConnection();
             if (before != null) {
                 before.accept(connection);
             }
@@ -773,24 +784,11 @@ public abstract class AbstractTest {
     }
 
     protected void ddl(String sql) {
-        EntityManagerFactory emf = entityManagerFactory();
-        if(emf != null && emf.isOpen()) {
-            doInJDBC(connection -> {
-                try (Statement statement = connection.createStatement()) {
-                    statement.setQueryTimeout(1);
-                    statement.executeUpdate(sql);
-                } catch (SQLException e) {
-                    LOGGER.error("Statement failed", e);
-                }
-            });
-        }
-        else {
-            try (Connection connection = newDataSource().getConnection();
-                 Statement statement = connection.createStatement()) {
-                statement.executeUpdate(sql);
-            } catch (SQLException e) {
-                LOGGER.error("Statement failed", e);
-            }
+        try (Connection connection = dataSource().getConnection();
+             Statement statement = connection.createStatement()) {
+            statement.executeUpdate(sql);
+        } catch (SQLException e) {
+            LOGGER.error("Statement failed", e);
         }
     }
 
@@ -855,30 +853,38 @@ public abstract class AbstractTest {
      * @param connection JDBC Connection time out
      */
     public void setJdbcTimeout(Connection connection) {
+        setJdbcTimeout(connection, 1000);
+    }
+
+    /**
+     * Set JDBC Connection or Statement timeout
+     *
+     * @param connection JDBC Connection time out
+     * @param timoutMillis millis to wait
+     */
+    public void setJdbcTimeout(Connection connection, long timoutMillis) {
         try (Statement st = connection.createStatement()) {
             DataSourceProvider dataSourceProvider = dataSourceProvider();
 
-            switch ( dataSourceProvider.database() ) {
+            switch (dataSourceProvider.database()) {
                 case POSTGRESQL:
-                    st.execute( "SET statement_timeout TO 1000" );
+                    st.execute(String.format("SET statement_timeout TO %d", timoutMillis));
                     break;
                 case MYSQL:
-                    connection.setNetworkTimeout( Executors.newSingleThreadExecutor(), 1000 );
-                    st.execute( "SET SESSION innodb_lock_wait_timeout = 1" );
+                    connection.setNetworkTimeout(Executors.newSingleThreadExecutor(), (int) timoutMillis);
+                    st.execute(String.format("SET SESSION innodb_lock_wait_timeout = %d", TimeUnit.MILLISECONDS.toSeconds(timoutMillis)));
                     break;
                 case SQLSERVER:
-                    st.execute( "SET LOCK_TIMEOUT 1" );
+                    st.execute(String.format("SET LOCK_TIMEOUT %d", timoutMillis));
                     break;
                 default:
                     try {
-                        connection.setNetworkTimeout( Executors.newSingleThreadExecutor(), 1000 );
-                    }
-                    catch (Throwable ignore) {
+                        connection.setNetworkTimeout(Executors.newSingleThreadExecutor(), (int) timoutMillis);
+                    } catch (Throwable ignore) {
                         ignore.fillInStackTrace();
                     }
             }
-        }
-        catch (SQLException e) {
+        } catch (SQLException e) {
             fail(e.getMessage());
         }
     }
@@ -1038,11 +1044,22 @@ public abstract class AbstractTest {
     }
 
     public static long longValue(Object number) {
+        if(number instanceof String) {
+            return Long.parseLong((String) number);
+        }
         return ((Number) number).longValue();
     }
 
     public static double doubleValue(Object number) {
         return ((Number) number).doubleValue();
+    }
+
+    public static URL urlValue(String url) {
+        try {
+            return url != null ? new URL(url) : null;
+        } catch (MalformedURLException e) {
+            throw new IllegalArgumentException(e);
+        }
     }
 
     protected List<Map<String, String>> parseResultSet(ResultSet resultSet) {

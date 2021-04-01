@@ -7,25 +7,37 @@ import com.vladmihalcea.book.hpjp.util.logging.InlineQueryLogEntryCreator;
 import com.vladmihalcea.hibernate.type.util.ClassImportIntegrator;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import net.ttddyy.dsproxy.ExecutionInfo;
+import net.ttddyy.dsproxy.QueryInfo;
+import net.ttddyy.dsproxy.listener.MethodExecutionContext;
+import net.ttddyy.dsproxy.listener.lifecycle.JdbcLifecycleEventListenerAdapter;
 import net.ttddyy.dsproxy.listener.logging.SLF4JQueryLoggingListener;
 import net.ttddyy.dsproxy.support.ProxyDataSourceBuilder;
 import org.hibernate.jpa.HibernatePersistenceProvider;
 import org.hibernate.jpa.boot.spi.IntegratorProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.*;
 import org.springframework.context.support.PropertySourcesPlaceholderConfigurer;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.orm.jpa.JpaTransactionManager;
 import org.springframework.orm.jpa.JpaVendorAdapter;
 import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
 import org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.persistence.EntityManagerFactory;
 import javax.sql.DataSource;
+import java.sql.Connection;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  *
@@ -64,7 +76,7 @@ public class JPATransactionManagerConfiguration {
     }
 
     @Bean(destroyMethod = "close")
-    public DataSource actualDataSource() {
+    public HikariDataSource actualDataSource() {
         Properties driverProperties = new Properties();
         driverProperties.setProperty("url", jdbcUrl);
         driverProperties.setProperty("user", jdbcUser);
@@ -74,18 +86,50 @@ public class JPATransactionManagerConfiguration {
         properties.put("dataSourceClassName", dataSourceClassName);
         properties.put("dataSourceProperties", driverProperties);
         properties.setProperty("maximumPoolSize", String.valueOf(3));
-        return new HikariDataSource(new HikariConfig(properties));
+        HikariConfig hikariConfig = new HikariConfig(properties);
+        hikariConfig.setAutoCommit(false);
+        return new HikariDataSource(hikariConfig);
     }
 
     @Bean
     public DataSource dataSource() {
         SLF4JQueryLoggingListener loggingListener = new SLF4JQueryLoggingListener();
         loggingListener.setQueryLogEntryCreator(new InlineQueryLogEntryCreator());
-        return ProxyDataSourceBuilder
+        DataSource dataSource = ProxyDataSourceBuilder
                 .create(actualDataSource())
                 .name(DATA_SOURCE_PROXY_NAME)
                 .listener(loggingListener)
+                .listener(new JdbcLifecycleEventListenerAdapter() {
+                    private final ThreadLocal<LongAdder> queryCountHolder = new ThreadLocal<>();
+
+                    private final Logger LOGGER = LoggerFactory.getLogger(getClass());
+
+                    @Override
+                    public void afterGetConnection(MethodExecutionContext executionContext) {
+                        queryCountHolder.set(new LongAdder());
+                    }
+
+                    @Override
+                    public void beforeQuery(ExecutionInfo execInfo, List<QueryInfo> queryInfoList) {
+                        queryCountHolder.get().increment();
+                    }
+
+                    @Override
+                    public void afterCommit(MethodExecutionContext executionContext) {
+                        if(queryCountHolder.get().intValue() == 0) {
+                            LOGGER.warn("Transaction didn't execute any SQL statement!");
+                        }
+                    }
+
+                    @Override
+                    public void afterClose(MethodExecutionContext executionContext) {
+                        if(executionContext.getTarget() instanceof Connection) {
+                            queryCountHolder.remove();
+                        }
+                    }
+                })
                 .build();
+        return dataSource;
     }
 
     @Bean
@@ -112,6 +156,11 @@ public class JPATransactionManagerConfiguration {
     @Bean
     public TransactionTemplate transactionTemplate(EntityManagerFactory entityManagerFactory) {
         return new TransactionTemplate(transactionManager(entityManagerFactory));
+    }
+
+    @Bean
+    public JdbcTemplate jdbcTemplate(DataSource dataSource) {
+        return new JdbcTemplate(dataSource);
     }
 
     protected Properties additionalProperties() {
